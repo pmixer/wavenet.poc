@@ -30,85 +30,86 @@ def parse_wav(path):
 
 # tf implementation looks more complex
 class WaveNet(torch.nn.Module):
-    def __init__(self, n_classes=256, n_blocks=2, n_layers=14, n_hidden=128):
+    def __init__(self, n_classes=256, n_layers=14, n_hidden=128):
         super(WaveNet, self).__init__()
-        self.n_blocks = n_blocks
         self.n_layers = n_layers
         self.n_hidden = n_hidden
         self.n_classes = n_classes
 
-        self.blocks = torch.nn.ModuleList()
-        for b in range(self.n_blocks):
-            layers = torch.nn.ModuleList()
-            for l in range(self.n_layers):
-                d = 2**(l%10) # max dialation = 512
-                if b == 0 and l == 0:
-                    conv_op = torch.nn.Conv1d(1, n_hidden, 2, dilation=d, bias=False)
-                else:
-                    conv_op = torch.nn.Conv1d(n_hidden, n_hidden, 2, dilation=d, bias=False)
-                torch.nn.init.xavier_uniform_(conv_op.weight)
-                layers.append(conv_op)
-            self.blocks.append(layers)
+        self.layers = torch.nn.ModuleList()
+        for l in range(self.n_layers):
+            d = 2**(l%13) # max dialation = 4096
+            if l == 0:
+                conv_op = torch.nn.Conv1d(1, n_hidden, 2, dilation=d, bias=False)
+            else:
+                conv_op = torch.nn.Conv1d(n_hidden, n_hidden, 2, dilation=d, bias=False)
+            torch.nn.init.xavier_uniform_(conv_op.weight)
+            self.layers.append(conv_op)
         self.classifier = torch.nn.Conv1d(n_hidden, n_classes, 1)
         torch.nn.init.xavier_uniform_(self.classifier.weight)
         self.classifier.bias.data.fill_(0.001)
 
     def forward(self, seq):
-        for b in range(self.n_blocks):
-            for l in range(self.n_layers):
-                seq = torch.nn.functional.pad(seq, (2**(l%10), 0))
-                seq = self.blocks[b][l](seq)
-                seq = torch.nn.functional.relu(seq)
+        for l in range(self.n_layers):
+            seq = torch.nn.functional.pad(seq, (2**(l%13), 0))
+            seq = self.layers[l](seq)
+            seq = torch.nn.functional.relu(seq)
         seq = self.classifier(seq)
 
         return seq
 
-    def predict(self, first_frame_input, n_steps=32000):
-        dN, dC, dT = first_frame_input.shape
+    def predict(self, first_frame_input, dev, n_steps=320):
+        dN, dC = first_frame_input.shape
         bins = np.linspace(-1, 1, 256)
+        labels = []
         dp_queues = []
         dp_queue_indices = []
-        for b in range(self.n_blocks):
-            for l in range(self.n_layers):
-                dp_queue_indices.append(0)
-                d = 2**(l%10) # max dialation = 1024
-                dp_queues.append(torch.zeros((dN, self.n_hidden, d)))
+        for l in range(self.n_layers):
+            dp_queue_indices.append(0)
+            d = 2**(l%13)
+            dp_queues.append(torch.zeros((dN, self.n_hidden, d)).to(dev))
 
-        res = torch.zeros((dN, dC, n_steps)); res[:, :, :2] = first_frame_input
+        res = torch.zeros((dN, dC, n_steps)).to(dev); res[:, :, 1] = first_frame_input
         for s in range(2, n_steps):
             emb = res[:, :, s-1] # last_frame
             rem = res[:, :, s-2]
-            for lid in range(len(dp_queues)):
-                b, l = lid // self.n_layers, lid % self.n_layers
-                W = self.blocks[b][l].weight.data
+            for l in range(self.n_layers):
+                if l > 0:
+                    rem = dp_queues[l][:, :, dp_queue_indices[l]]
+                W = self.layers[l].weight.data
                 W_r, W_e = W[:, :, 0], W[:, :, 1]
                 emb = torch.matmul(rem, W_r.T) + torch.matmul(emb, W_e.T)
                 emb = torch.nn.functional.relu(emb)
 
-                rem = dp_queues[lid][:, :, dp_queue_indices[lid]]
-                qlen = self.blocks[b][l].dilation[0]
-                dp_queue_indices[lid] = (dp_queue_indices[lid] + 1) % qlen
-                dp_queues[lid][:, :, dp_queue_indices[lid]] = emb
+                qlen = dp_queues[l].shape[-1]
+                dp_queue_indices[l] = (dp_queue_indices[l] + 1) % qlen
+                dp_queues[l][:, :, dp_queue_indices[l]] = emb
             print("generated frame: " + str(s))
             emb = torch.matmul(emb, self.classifier.weight.data.squeeze(-1).T)
             emb += self.classifier.bias.data
 
             label = torch.argmax(emb, axis=1)
             emb = bins[label.item()]
+            labels.append(label.item())
             res[:, :, s] = emb
 
-        return res
+        return res, labels
 
 
 if __name__ == '__main__':
     input_seqs, next_items = parse_wav('voice.wav')
-    dev = 'cpu' # cuda:0
+    dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     input_seqs = torch.FloatTensor(input_seqs).to(dev)
     next_items = torch.LongTensor(next_items).to(dev)
     # initializer, layers, loss, optimizer
     model = WaveNet().to(dev)
     ce_criterion = torch.nn.CrossEntropyLoss()
-    adam_optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.98))
+    adam_optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.98))
+    
+    try:
+        model.load_state_dict(torch.load('model.ckpt', map_location=torch.device(dev)))
+    except:
+        print('no model.ckpt found, training from scratch')
 
     # training, trying to fit one audio clip by gradient descent
     if False: # train or not
@@ -122,13 +123,20 @@ if __name__ == '__main__':
             adam_optimizer.step()
         torch.save(model.state_dict(), 'model.ckpt')
 
-    dev = 'cpu'
-    model.load_state_dict(torch.load('model.ckpt', map_location=torch.device(dev)))
+    # model.load_state_dict(torch.load('model.ckpt', map_location=torch.device(dev)))
+
+    # test fitting result
+    logits = model(input_seqs)
+    labels = torch.argmax(logits, axis=1).cpu().numpy()
+    bins = np.linspace(-1, 1, 256)
+    audio_norm = bins[labels]
+    audio = (audio_norm * 32768.0).astype('int16')
+    scipy.io.wavfile.write('expected.wav', 44100, audio.flatten())
 
     # start online/causal prediction
-    input_ = input_seqs[:, :, :2]
-    audio_norm = model.predict(input_)
+    input_ = input_seqs[:, :, 0]
+    audio_norm, labels = model.predict(input_, dev)
 
     # save generated audio file
-    audio = (audio_norm.squeeze().numpy() * 32768.0).astype('int16')
+    audio = (audio_norm.squeeze().cpu().numpy() * 32768.0).astype('int16')
     scipy.io.wavfile.write('generated.wav', 44100, audio)
