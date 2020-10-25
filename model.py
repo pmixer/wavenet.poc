@@ -115,13 +115,13 @@ if __name__ == '__main__':
         print('no model.ckpt found, training from scratch')
 
     # training, trying to fit one audio clip by gradient descent
-    if False: # train or not
+    if True: # train or not
         for i in range(2333):
             adam_optimizer.zero_grad()
             next_item_preds = model(input_seqs)
             loss = ce_criterion(next_item_preds, next_items)
             print("iteration %d, loss: %.4f" % (i, loss.item()))
-            if loss.item() < 0.16: break
+            if loss.item() < 0.1: break
             loss.backward()
             adam_optimizer.step()
         torch.save(model.state_dict(), 'model.ckpt')
