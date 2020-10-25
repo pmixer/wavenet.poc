@@ -58,7 +58,7 @@ class WaveNet(torch.nn.Module):
 
         return seq
 
-    def predict(self, first_frame_input, dev, n_steps=320):
+    def predict(self, first_frame_input, dev, n_steps=32000):
         dN, dC = first_frame_input.shape
         bins = np.linspace(-1, 1, 256)
         labels = []
@@ -112,18 +112,18 @@ if __name__ == '__main__':
         print('no model.ckpt found, training from scratch')
 
     # training, trying to fit one audio clip by gradient descent
-    if False: # train or not
+    if True: # train or not
         for i in range(2333):
             adam_optimizer.zero_grad()
             next_item_preds = model(input_seqs)
             loss = ce_criterion(next_item_preds, next_items)
             print("iteration %d, loss: %.4f" % (i, loss.item()))
-            if loss.item() < 0.1: break
+            if loss.item() < 0.16: break
             loss.backward()
             adam_optimizer.step()
         torch.save(model.state_dict(), 'model.ckpt')
 
-    # model.load_state_dict(torch.load('model.ckpt', map_location=torch.device(dev)))
+    model.load_state_dict(torch.load('model.ckpt', map_location=torch.device(dev)))
 
     # test fitting result
     logits = model(input_seqs)
