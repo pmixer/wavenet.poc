@@ -30,7 +30,7 @@ def parse_wav(path):
 
 # tf implementation looks more complex
 class WaveNet(torch.nn.Module):
-    def __init__(self, n_classes=256, n_layers=14, n_hidden=128):
+    def __init__(self, n_classes=256, n_layers=26, n_hidden=128):
         super(WaveNet, self).__init__()
         self.n_layers = n_layers
         self.n_hidden = n_hidden
@@ -38,7 +38,7 @@ class WaveNet(torch.nn.Module):
 
         self.layers = torch.nn.ModuleList()
         for l in range(self.n_layers):
-            d = 2**(l%13) # max dialation = 4096
+            d = 2**(l%14) # max dialation = 8192
             if l == 0:
                 conv_op = torch.nn.Conv1d(1, n_hidden, 2, dilation=d, bias=False)
             else:
@@ -51,7 +51,7 @@ class WaveNet(torch.nn.Module):
 
     def forward(self, seq):
         for l in range(self.n_layers):
-            seq = torch.nn.functional.pad(seq, (2**(l%13), 0))
+            seq = torch.nn.functional.pad(seq, (2**(l%14), 0))
             seq = self.layers[l](seq)
             seq = torch.nn.functional.relu(seq)
         seq = self.classifier(seq)
@@ -66,7 +66,7 @@ class WaveNet(torch.nn.Module):
         dp_queue_indices = []
         for l in range(self.n_layers):
             dp_queue_indices.append(0)
-            d = 2**(l%13)
+            d = 2**(l%14)
             dp_queues.append(torch.zeros((dN, self.n_hidden, d)).to(dev))
 
         res = torch.zeros((dN, dC, n_steps)).to(dev); res[:, :, 1] = first_frame_input
@@ -75,23 +75,26 @@ class WaveNet(torch.nn.Module):
             rem = res[:, :, s-2]
             for l in range(self.n_layers):
                 if l > 0:
-                    rem = dp_queues[l][:, :, dp_queue_indices[l]]
+                    rem = dp_queues[l][:, :, dp_queue_indices[l]].clone()
+                    dp_queues[l][:, :, dp_queue_indices[l]] = emb
                 W = self.layers[l].weight.data
                 W_r, W_e = W[:, :, 0], W[:, :, 1]
                 emb = torch.matmul(rem, W_r.T) + torch.matmul(emb, W_e.T)
                 emb = torch.nn.functional.relu(emb)
 
                 qlen = dp_queues[l].shape[-1]
+                assert qlen == self.layers[l].dilation[0]
                 dp_queue_indices[l] = (dp_queue_indices[l] + 1) % qlen
-                dp_queues[l][:, :, dp_queue_indices[l]] = emb
+                
             print("generated frame: " + str(s))
             emb = torch.matmul(emb, self.classifier.weight.data.squeeze(-1).T)
             emb += self.classifier.bias.data
 
-            label = torch.argmax(emb, axis=1)
-            emb = bins[label.item()]
-            labels.append(label.item())
-            res[:, :, s] = emb
+            label = torch.argmax(emb, axis=1).item()
+            # if label != 89:
+                # import pdb; pdb.set_trace()
+            labels.append(label)
+            res[:, :, s] = bins[label]
 
         return res, labels
 
@@ -112,7 +115,7 @@ if __name__ == '__main__':
         print('no model.ckpt found, training from scratch')
 
     # training, trying to fit one audio clip by gradient descent
-    if True: # train or not
+    if False: # train or not
         for i in range(2333):
             adam_optimizer.zero_grad()
             next_item_preds = model(input_seqs)
@@ -127,9 +130,9 @@ if __name__ == '__main__':
 
     # test fitting result
     logits = model(input_seqs)
-    labels = torch.argmax(logits, axis=1).cpu().numpy()
+    ref_labels = torch.argmax(logits, axis=1).cpu().numpy().flatten().tolist()
     bins = np.linspace(-1, 1, 256)
-    audio_norm = bins[labels]
+    audio_norm = bins[ref_labels]
     audio = (audio_norm * 32768.0).astype('int16')
     scipy.io.wavfile.write('expected.wav', 44100, audio.flatten())
 
