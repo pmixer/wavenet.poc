@@ -6,4 +6,4 @@ python model.py
 
 for training the model then generate the audio.
 
-Long term goal is to implement an optimized(maybe persistent) CUDA version of WaveNet for model inference in reference to https://github.com/NVIDIA/nv-wavenet/ and try to deploy it using https://github.com/triton-inference-server, pls star it to let me know KIS version of models are helpful for you so I may consider create more of them :)
+Long term goal is to implement an optimized(maybe persistent) CUDA version of WaveNet for model inference in reference to https://github.com/NVIDIA/nv-wavenet/ and try to deploy it using https://github.com/triton-inference-server, pls consider star the repo to let me know KIS version of models are welcomed, so we can create more of them :)
